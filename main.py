@@ -486,3 +486,32 @@ async def score_test(request: Request):
         "probability": round(probability, 4),
         "decision": decision,
     }
+
+
+@app.get("/test-supabase")
+def test_supabase():
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
+        params = {
+            "select": "id,id_trade,symbol,result",
+            "limit": "5"
+        }
+
+        response = requests.get(
+            url,
+            headers=supabase_headers(),
+            params=params
+        )
+
+        return {
+            "status": "connected" if response.status_code == 200 else "error",
+            "supabase_status_code": response.status_code,
+            "supabase_response": response.json() if response.text else [],
+            "raw_response": response.text
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
