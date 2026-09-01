@@ -325,7 +325,7 @@ def health():
     }
 
 
-@app.post("/train")
+@app.api_route("/train", methods=["GET", "POST"])
 def train_model():
     rows = get_completed_signals()
 
