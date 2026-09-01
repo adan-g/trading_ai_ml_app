@@ -2,12 +2,11 @@ import os
 import json
 import pickle
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 
 import pandas as pd
 import requests
 from fastapi import FastAPI, Request
-from pydantic import BaseModel
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
@@ -116,34 +115,100 @@ def supabase_headers():
     }
 
 
+def clean_signal_for_supabase(signal: Dict[str, Any]):
+    cleaned = signal.copy()
+
+    # Do not save secret in Supabase
+    cleaned.pop("secret", None)
+
+    # Convert empty strings to None
+    for key, value in list(cleaned.items()):
+        if value == "":
+            cleaned[key] = None
+
+    return cleaned
+
+
 def get_completed_signals():
     url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
+
     params = {
         "select": "*",
-        "result": "in.(WIN,LOSS)",
         "order": "date_time.desc",
     }
 
-    response = requests.get(url, headers=supabase_headers(), params=params)
+    response = requests.get(
+        url,
+        headers=supabase_headers(),
+        params=params,
+    )
 
     if response.status_code not in [200, 201]:
         raise Exception(f"Supabase error: {response.status_code} - {response.text}")
 
-    return response.json()
+    rows = response.json()
+
+    completed_rows = []
+
+    for row in rows:
+        result = str(row.get("result", "")).strip().upper()
+
+        if result in ["WIN", "LOSS"]:
+            row["result"] = result
+            completed_rows.append(row)
+
+    return completed_rows
 
 
-def update_signal_ml_result(id_trade: str, probability: float, decision: str):
+def insert_raw_signal(signal: Dict[str, Any]):
+    clean_signal = clean_signal_for_supabase(signal)
+
     url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
+
+    response = requests.post(
+        url,
+        headers={
+            **supabase_headers(),
+            "Prefer": "return=minimal",
+        },
+        data=json.dumps(clean_signal),
+    )
+
+    return response.status_code, response.text
+
+
+def update_signal_result(id_trade: str, signal: Dict[str, Any]):
+    url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
+
     params = {
         "id_trade": f"eq.{id_trade}"
     }
 
     payload = {
-        "ml_probability": probability,
-        "ml_decision": decision,
-        "model_version": "random_forest_v1",
+        "signal_type": "ENTRY + RESULT",
+        "result": signal.get("result"),
+        "r_result": signal.get("r_result"),
+        "candles_to_result": signal.get("candles_to_result"),
+        "tracking_target_2r": signal.get("tracking_target_2r"),
+        "target_price_2r": signal.get("target_price_2r"),
+        "reached_2r": signal.get("reached_2r"),
+        "candles_to_2r": signal.get("candles_to_2r"),
+        "max_r_before_sl": signal.get("max_r_before_sl"),
         "updated_at": datetime.utcnow().isoformat(),
     }
+
+    # Convert empty strings to None
+    payload = {
+        key: None if value == "" else value
+        for key, value in payload.items()
+    }
+
+    # Normalize result values
+    if payload.get("result") is not None:
+        payload["result"] = str(payload["result"]).strip().upper()
+
+    if payload.get("reached_2r") is not None:
+        payload["reached_2r"] = str(payload["reached_2r"]).strip().upper()
 
     response = requests.patch(
         url,
@@ -153,21 +218,6 @@ def update_signal_ml_result(id_trade: str, probability: float, decision: str):
         },
         params=params,
         data=json.dumps(payload),
-    )
-
-    return response.status_code, response.text
-
-
-def insert_raw_signal(signal: Dict[str, Any]):
-    url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
-
-    response = requests.post(
-        url,
-        headers={
-            **supabase_headers(),
-            "Prefer": "return=minimal",
-        },
-        data=json.dumps(signal),
     )
 
     return response.status_code, response.text
@@ -214,15 +264,11 @@ def apply_encoders_to_signal(df: pd.DataFrame, encoders: Dict[str, LabelEncoder]
         df[col] = df[col].replace(["", "None", "nan", "NaN"], "UNKNOWN")
 
         encoder = encoders[col]
-
         known_classes = set(encoder.classes_)
 
         df[col] = df[col].apply(
-            lambda x: x if x in known_classes else "UNKNOWN"
+            lambda x: x if x in known_classes else encoder.classes_[0]
         )
-
-        if "UNKNOWN" not in known_classes:
-            encoder.classes_ = list(encoder.classes_) + ["UNKNOWN"]
 
         df[col] = encoder.transform(df[col].astype(str))
 
@@ -315,6 +361,13 @@ def home():
         "status": "online",
         "app": "Trading ML Filter",
         "model": "Random Forest",
+        "routes": {
+            "train": "/train",
+            "webhook": "/webhook",
+            "health": "/health",
+            "test_supabase": "/test-supabase",
+            "debug_counts": "/debug-counts",
+        }
     }
 
 
@@ -338,6 +391,7 @@ def train_model():
 
     df = pd.DataFrame(rows)
 
+    df["result"] = df["result"].astype(str).str.strip().str.upper()
     df = df[df["result"].isin(["WIN", "LOSS"])]
 
     if len(df) < 5:
@@ -356,13 +410,20 @@ def train_model():
     X = df[FEATURE_COLUMNS]
     y = df["target"]
 
+    if len(y.unique()) < 2:
+        return {
+            "status": "not_enough_classes",
+            "message": "Need both WIN and LOSS trades to train.",
+            "rows_found": len(df),
+        }
+
     if len(df) >= 20:
         X_train, X_test, y_train, y_test = train_test_split(
             X,
             y,
             test_size=0.25,
             random_state=42,
-            stratify=y if len(y.unique()) > 1 else None,
+            stratify=y,
         )
     else:
         X_train = X
@@ -371,8 +432,8 @@ def train_model():
         y_test = y
 
     model = RandomForestClassifier(
-        n_estimators=200,
-        max_depth=5,
+        n_estimators=300,
+        max_depth=6,
         random_state=42,
         class_weight="balanced",
     )
@@ -394,6 +455,8 @@ def train_model():
         "status": "trained",
         "rows_used": len(df),
         "accuracy": round(float(accuracy), 4),
+        "win_count": int((df["target"] == 1).sum()),
+        "loss_count": int((df["target"] == 0).sum()),
         "top_features": [
             {
                 "feature": feature,
@@ -413,12 +476,40 @@ async def tradingview_webhook(request: Request):
             "status": "unauthorized"
         }
 
-    signal_type = str(signal.get("signal_type", "")).upper()
+    signal_type = str(signal.get("signal_type", "")).upper().strip()
+    id_trade = signal.get("id_trade")
 
+    if not id_trade:
+        return {
+            "status": "error",
+            "message": "Missing id_trade"
+        }
+
+    # ====================================================
+    # RESULT ALERT
+    # Update existing Supabase row with WIN/LOSS result
+    # ====================================================
+    if signal_type == "RESULT":
+        update_status, update_response = update_signal_result(id_trade, signal)
+
+        return {
+            "status": "result_processed",
+            "id_trade": id_trade,
+            "symbol": signal.get("symbol"),
+            "side": signal.get("side"),
+            "result": signal.get("result"),
+            "supabase_update_status": update_status,
+            "supabase_update_response": update_response,
+        }
+
+    # ====================================================
+    # ENTRY ALERT
+    # Score entry with Random Forest, insert row, send Discord if passed
+    # ====================================================
     if signal_type != "ENTRY":
         return {
             "status": "ignored",
-            "message": "Only ENTRY signals are filtered by ML."
+            "message": f"Signal type ignored: {signal_type}"
         }
 
     model, encoders = load_model()
@@ -433,10 +524,7 @@ async def tradingview_webhook(request: Request):
 
     probability = float(model.predict_proba(X_signal)[0][1])
 
-    if probability >= ML_THRESHOLD:
-        decision = "SEND"
-    else:
-        decision = "SKIP"
+    decision = "SEND" if probability >= ML_THRESHOLD else "SKIP"
 
     signal["ml_probability"] = probability
     signal["ml_decision"] = decision
@@ -452,8 +540,8 @@ async def tradingview_webhook(request: Request):
         send_discord_alert(signal, probability, decision)
 
     return {
-        "status": "processed",
-        "id_trade": signal.get("id_trade"),
+        "status": "entry_processed",
+        "id_trade": id_trade,
         "symbol": signal.get("symbol"),
         "side": signal.get("side"),
         "probability": round(probability, 4),
@@ -493,25 +581,98 @@ def test_supabase():
     try:
         url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
         params = {
-            "select": "id,id_trade,symbol,result",
-            "limit": "5"
+            "select": "id,id_trade,symbol,result,ml_probability,ml_decision",
+            "limit": "5",
+            "order": "created_at.desc",
         }
 
         response = requests.get(
             url,
             headers=supabase_headers(),
-            params=params
+            params=params,
         )
 
         return {
             "status": "connected" if response.status_code == 200 else "error",
             "supabase_status_code": response.status_code,
             "supabase_response": response.json() if response.text else [],
-            "raw_response": response.text
+            "raw_response": response.text,
         }
 
     except Exception as e:
         return {
             "status": "error",
-            "message": str(e)
+            "message": str(e),
+        }
+
+
+@app.get("/debug-counts")
+def debug_counts():
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
+
+        response = requests.get(
+            url,
+            headers=supabase_headers(),
+            params={
+                "select": "id_trade,symbol,signal_type,result,reached_2r,ml_probability,ml_decision,created_at",
+                "limit": "20",
+                "order": "created_at.desc",
+            },
+        )
+
+        if response.status_code != 200:
+            return {
+                "status": "error",
+                "code": response.status_code,
+                "response": response.text,
+            }
+
+        recent_rows = response.json()
+
+        all_response = requests.get(
+            url,
+            headers=supabase_headers(),
+            params={
+                "select": "result,signal_type,ml_decision",
+            },
+        )
+
+        result_counts = {}
+        signal_type_counts = {}
+        ml_decision_counts = {}
+
+        if all_response.status_code == 200:
+            rows = all_response.json()
+
+            for row in rows:
+                result = str(row.get("result", "NULL")).strip()
+                signal_type = str(row.get("signal_type", "NULL")).strip()
+                ml_decision = str(row.get("ml_decision", "NULL")).strip()
+
+                if result == "":
+                    result = "EMPTY"
+
+                if signal_type == "":
+                    signal_type = "EMPTY"
+
+                if ml_decision == "":
+                    ml_decision = "EMPTY"
+
+                result_counts[result] = result_counts.get(result, 0) + 1
+                signal_type_counts[signal_type] = signal_type_counts.get(signal_type, 0) + 1
+                ml_decision_counts[ml_decision] = ml_decision_counts.get(ml_decision, 0) + 1
+
+        return {
+            "status": "connected",
+            "recent_rows": recent_rows,
+            "result_counts": result_counts,
+            "signal_type_counts": signal_type_counts,
+            "ml_decision_counts": ml_decision_counts,
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
         }
