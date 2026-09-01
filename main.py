@@ -510,15 +510,27 @@ def train_model():
 async def tradingview_webhook(request: Request):
     signal = await request.json()
 
+    print("========== NEW WEBHOOK RECEIVED ==========")
+    print("RAW SIGNAL:", signal)
+
     if signal.get("secret") != WEBHOOK_SECRET:
+        print("UNAUTHORIZED: wrong secret")
+        print("RECEIVED SECRET:", signal.get("secret"))
         return {
-            "status": "unauthorized"
+            "status": "unauthorized",
+            "received_secret": signal.get("secret")
         }
 
     signal_type = str(signal.get("signal_type", "")).upper().strip()
     id_trade = signal.get("id_trade")
 
+    print("SIGNAL TYPE:", signal_type)
+    print("ID TRADE:", id_trade)
+    print("SYMBOL:", signal.get("symbol"))
+    print("TIMEFRAME:", signal.get("timeframe"))
+
     if not id_trade:
+        print("ERROR: Missing id_trade")
         return {
             "status": "error",
             "message": "Missing id_trade"
@@ -530,6 +542,9 @@ async def tradingview_webhook(request: Request):
     # ====================================================
     if signal_type == "RESULT":
         update_status, update_response = update_signal_result(id_trade, signal)
+
+        print("RESULT UPDATE STATUS:", update_status)
+        print("RESULT UPDATE RESPONSE:", update_response)
 
         return {
             "status": "result_processed",
@@ -546,6 +561,7 @@ async def tradingview_webhook(request: Request):
     # Score entry with Random Forest, insert row, send Telegram if passed
     # ====================================================
     if signal_type != "ENTRY":
+        print("IGNORED SIGNAL TYPE:", signal_type)
         return {
             "status": "ignored",
             "message": f"Signal type ignored: {signal_type}"
@@ -554,6 +570,7 @@ async def tradingview_webhook(request: Request):
     model, encoders = load_model()
 
     if model is None or encoders is None:
+        print("NO MODEL FOUND")
         return {
             "status": "no_model",
             "message": "Train the model first using /train."
@@ -562,12 +579,14 @@ async def tradingview_webhook(request: Request):
     X_signal = prepare_single_signal(signal, encoders)
 
     probability = float(model.predict_proba(X_signal)[0][1])
-
     decision = "SEND" if probability >= ML_THRESHOLD else "SKIP"
 
     signal["ml_probability"] = probability
     signal["ml_decision"] = decision
     signal["model_version"] = "random_forest_v1"
+
+    print("ML PROBABILITY:", probability)
+    print("ML DECISION:", decision)
 
     try:
         insert_status, insert_response = insert_raw_signal(signal)
@@ -575,16 +594,21 @@ async def tradingview_webhook(request: Request):
         insert_status = "error"
         insert_response = str(e)
 
+    print("SUPABASE INSERT STATUS:", insert_status)
+    print("SUPABASE INSERT RESPONSE:", insert_response)
+
     telegram_result = None
 
     if decision == "SEND":
         telegram_result = send_telegram_alert(signal, probability, decision)
+        print("TELEGRAM RESULT:", telegram_result)
 
     return {
         "status": "entry_processed",
         "id_trade": id_trade,
         "symbol": signal.get("symbol"),
         "side": signal.get("side"),
+        "timeframe": signal.get("timeframe"),
         "probability": round(probability, 4),
         "decision": decision,
         "supabase_insert_status": insert_status,
