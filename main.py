@@ -25,8 +25,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 TABLE_NAME = "signals"
-MODEL_FILE = "random_forest_model.pkl"
-ENCODERS_FILE = "label_encoders.pkl"
+MODEL_FILE = "/var/data/random_forest_model.pkl"
+ENCODERS_FILE = "/var/data/label_encoders.pkl"
 
 ML_THRESHOLD = float(os.getenv("ML_THRESHOLD", "0.60"))
 
