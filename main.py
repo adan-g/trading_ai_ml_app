@@ -123,7 +123,7 @@ def clean_signal_for_supabase(signal: Dict[str, Any]):
     # Do not save secret in Supabase
     cleaned.pop("secret", None)
 
-    # Add received time like Google Sheets does
+    # Add received time
     if not cleaned.get("received_time"):
         cleaned["received_time"] = datetime.utcnow().isoformat()
 
@@ -204,13 +204,11 @@ def update_signal_result(id_trade: str, signal: Dict[str, Any]):
         "updated_at": datetime.utcnow().isoformat(),
     }
 
-    # Convert empty strings to None
     payload = {
         key: None if value == "" else value
         for key, value in payload.items()
     }
 
-    # Normalize result values
     if payload.get("result") is not None:
         payload["result"] = str(payload["result"]).strip().upper()
 
@@ -389,7 +387,6 @@ def send_telegram_alert(signal: Dict[str, Any], probability: float, decision: st
 @app.get("/test-telegram")
 def test_telegram():
     message = "✅ Telegram test from Render ML app."
-
     return send_telegram_message(message)
 
 
@@ -558,7 +555,9 @@ async def tradingview_webhook(request: Request):
 
     # ====================================================
     # ENTRY ALERT
-    # Score entry with Random Forest, insert row, send Telegram if passed
+    # Score first if model exists.
+    # If no model, insert anyway.
+    # Telegram only if decision is SEND.
     # ====================================================
     if signal_type != "ENTRY":
         print("IGNORED SIGNAL TYPE:", signal_type)
@@ -569,25 +568,31 @@ async def tradingview_webhook(request: Request):
 
     model, encoders = load_model()
 
+    probability = None
+    decision = "NO_MODEL"
+    telegram_result = None
+
     if model is None or encoders is None:
-        print("NO MODEL FOUND")
-        return {
-            "status": "no_model",
-            "message": "Train the model first using /train."
-        }
+        print("NO MODEL FOUND - INSERTING ENTRY ANYWAY")
 
-    X_signal = prepare_single_signal(signal, encoders)
+        signal["ml_probability"] = None
+        signal["ml_decision"] = "NO_MODEL"
+        signal["model_version"] = None
 
-    probability = float(model.predict_proba(X_signal)[0][1])
-    decision = "SEND" if probability >= ML_THRESHOLD else "SKIP"
+    else:
+        X_signal = prepare_single_signal(signal, encoders)
 
-    signal["ml_probability"] = probability
-    signal["ml_decision"] = decision
-    signal["model_version"] = "random_forest_v1"
+        probability = float(model.predict_proba(X_signal)[0][1])
+        decision = "SEND" if probability >= ML_THRESHOLD else "SKIP"
 
-    print("ML PROBABILITY:", probability)
-    print("ML DECISION:", decision)
+        signal["ml_probability"] = probability
+        signal["ml_decision"] = decision
+        signal["model_version"] = "random_forest_v1"
 
+        print("ML PROBABILITY:", probability)
+        print("ML DECISION:", decision)
+
+    # Insert into Supabase AFTER ML values are added
     try:
         insert_status, insert_response = insert_raw_signal(signal)
     except Exception as e:
@@ -597,8 +602,7 @@ async def tradingview_webhook(request: Request):
     print("SUPABASE INSERT STATUS:", insert_status)
     print("SUPABASE INSERT RESPONSE:", insert_response)
 
-    telegram_result = None
-
+    # Send Telegram only if ML says SEND
     if decision == "SEND":
         telegram_result = send_telegram_alert(signal, probability, decision)
         print("TELEGRAM RESULT:", telegram_result)
@@ -609,7 +613,7 @@ async def tradingview_webhook(request: Request):
         "symbol": signal.get("symbol"),
         "side": signal.get("side"),
         "timeframe": signal.get("timeframe"),
-        "probability": round(probability, 4),
+        "probability": round(probability, 4) if probability is not None else None,
         "decision": decision,
         "supabase_insert_status": insert_status,
         "supabase_insert_response": insert_response,
