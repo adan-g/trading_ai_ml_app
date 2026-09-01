@@ -1,6 +1,7 @@
 import os
 import json
 import pickle
+import time
 from datetime import datetime
 from typing import Dict, Any
 
@@ -121,7 +122,7 @@ def clean_signal_for_supabase(signal: Dict[str, Any]):
     # Do not save secret in Supabase
     cleaned.pop("secret", None)
 
-     # Add received time like Google Sheets does
+    # Add received time like Google Sheets does
     if not cleaned.get("received_time"):
         cleaned["received_time"] = datetime.utcnow().isoformat()
 
@@ -317,6 +318,52 @@ def load_model():
 # DISCORD
 # ====================================================
 
+def post_to_discord(payload: Dict[str, Any]):
+    if not DISCORD_WEBHOOK_URL:
+        return None
+
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "TradingMLFilter/1.0"
+    }
+
+    response = requests.post(
+        DISCORD_WEBHOOK_URL,
+        headers=headers,
+        json=payload,
+        timeout=10
+    )
+
+    # Normal Discord rate limit retry
+    if response.status_code == 429:
+        try:
+            data = response.json()
+            retry_after = float(data.get("retry_after", 2))
+
+            # Wait the exact Discord retry time, plus small safety buffer
+            time.sleep(retry_after + 0.5)
+
+            response = requests.post(
+                DISCORD_WEBHOOK_URL,
+                headers=headers,
+                json=payload,
+                timeout=10
+            )
+
+        except Exception:
+            # If Discord returns Cloudflare HTML instead of JSON, wait and try once
+            time.sleep(5)
+
+            response = requests.post(
+                DISCORD_WEBHOOK_URL,
+                headers=headers,
+                json=payload,
+                timeout=10
+            )
+
+    return response
+
+
 def send_discord_alert(signal: Dict[str, Any], probability: float, decision: str):
     if not DISCORD_WEBHOOK_URL:
         return {
@@ -355,19 +402,16 @@ def send_discord_alert(signal: Dict[str, Any], probability: float, decision: str
         "content": message
     }
 
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "TradingMLFilter/1.0"
-    }
+    response = post_to_discord(payload)
 
-    response = requests.post(
-        DISCORD_WEBHOOK_URL,
-        headers=headers,
-        json=payload,
-        timeout=10
-    )
+    if response is None:
+        return {
+            "status": "error",
+            "message": "Discord webhook URL missing"
+        }
 
     return {
+        "status": "sent" if response.status_code in [200, 204] else "error",
         "discord_status_code": response.status_code,
         "discord_response": response.text
     }
@@ -389,23 +433,20 @@ def test_discord():
         "content": "✅ Discord test from Render ML app."
     }
 
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "TradingMLFilter/1.0"
-    }
+    response = post_to_discord(payload)
 
-    response = requests.post(
-        DISCORD_WEBHOOK_URL,
-        headers=headers,
-        json=payload,
-        timeout=10
-    )
+    if response is None:
+        return {
+            "status": "error",
+            "message": "Discord webhook URL missing"
+        }
 
     return {
         "status": "sent" if response.status_code in [200, 204] else "error",
         "discord_status_code": response.status_code,
         "discord_response": response.text
     }
+
 
 @app.get("/")
 def home():
@@ -417,6 +458,7 @@ def home():
             "train": "/train",
             "webhook": "/webhook",
             "health": "/health",
+            "test_discord": "/test-discord",
             "test_supabase": "/test-supabase",
             "debug_counts": "/debug-counts",
         }
@@ -588,8 +630,10 @@ async def tradingview_webhook(request: Request):
         insert_status = "error"
         insert_response = str(e)
 
+    discord_result = None
+
     if decision == "SEND":
-        send_discord_alert(signal, probability, decision)
+        discord_result = send_discord_alert(signal, probability, decision)
 
     return {
         "status": "entry_processed",
@@ -600,6 +644,7 @@ async def tradingview_webhook(request: Request):
         "decision": decision,
         "supabase_insert_status": insert_status,
         "supabase_insert_response": insert_response,
+        "discord_result": discord_result,
     }
 
 
