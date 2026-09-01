@@ -1,7 +1,6 @@
 import os
 import json
 import pickle
-import time
 from datetime import datetime
 from typing import Dict, Any
 
@@ -20,8 +19,10 @@ from sklearn.preprocessing import LabelEncoder
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "my_secret_123")
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 TABLE_NAME = "signals"
 MODEL_FILE = "random_forest_model.pkl"
@@ -140,6 +141,7 @@ def get_completed_signals():
     params = {
         "select": "*",
         "order": "date_time.desc",
+        "limit": "5000",
     }
 
     response = requests.get(
@@ -315,62 +317,38 @@ def load_model():
 
 
 # ====================================================
-# DISCORD
+# TELEGRAM
 # ====================================================
 
-def post_to_discord(payload: Dict[str, Any]):
-    if not DISCORD_WEBHOOK_URL:
-        return None
+def send_telegram_message(message: str):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return {
+            "status": "error",
+            "message": "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing in Render environment variables."
+        }
 
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "TradingMLFilter/1.0"
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML",
     }
 
     response = requests.post(
-        DISCORD_WEBHOOK_URL,
-        headers=headers,
+        url,
         json=payload,
         timeout=10
     )
 
-    # Normal Discord rate limit retry
-    if response.status_code == 429:
-        try:
-            data = response.json()
-            retry_after = float(data.get("retry_after", 2))
-
-            # Wait the exact Discord retry time, plus small safety buffer
-            time.sleep(retry_after + 0.5)
-
-            response = requests.post(
-                DISCORD_WEBHOOK_URL,
-                headers=headers,
-                json=payload,
-                timeout=10
-            )
-
-        except Exception:
-            # If Discord returns Cloudflare HTML instead of JSON, wait and try once
-            time.sleep(5)
-
-            response = requests.post(
-                DISCORD_WEBHOOK_URL,
-                headers=headers,
-                json=payload,
-                timeout=10
-            )
-
-    return response
+    return {
+        "status": "sent" if response.status_code == 200 else "error",
+        "telegram_status_code": response.status_code,
+        "telegram_response": response.text,
+    }
 
 
-def send_discord_alert(signal: Dict[str, Any], probability: float, decision: str):
-    if not DISCORD_WEBHOOK_URL:
-        return {
-            "status": "error",
-            "message": "DISCORD_WEBHOOK_URL missing"
-        }
-
+def send_telegram_alert(signal: Dict[str, Any], probability: float, decision: str):
     symbol = signal.get("symbol", "")
     side = signal.get("side", "")
     timeframe = signal.get("timeframe", "")
@@ -379,73 +357,40 @@ def send_discord_alert(signal: Dict[str, Any], probability: float, decision: str
     tp = signal.get("take_profit", "")
     trend_1h = signal.get("trend_1h", "")
     trend_4h = signal.get("trend_4h", "")
+    id_trade = signal.get("id_trade", "")
 
     message = f"""
-🚨 **ML FILTER PASSED**
+🚨 <b>ML FILTER PASSED</b>
 
-**Symbol:** {symbol}
-**Side:** {side}
-**Timeframe:** {timeframe}
+<b>Symbol:</b> {symbol}
+<b>Side:</b> {side}
+<b>Timeframe:</b> {timeframe}
 
-**Entry:** {entry}
-**Stop Loss:** {stop}
-**Take Profit:** {tp}
+<b>Entry:</b> {entry}
+<b>Stop Loss:</b> {stop}
+<b>Take Profit:</b> {tp}
 
-**Trend 1H:** {trend_1h}
-**Trend 4H:** {trend_4h}
+<b>Trend 1H:</b> {trend_1h}
+<b>Trend 4H:</b> {trend_4h}
 
-**Random Forest Probability:** {round(probability * 100, 2)}%
-**Decision:** {decision}
+<b>Random Forest Probability:</b> {round(probability * 100, 2)}%
+<b>Decision:</b> {decision}
+
+<b>ID Trade:</b> {id_trade}
 """
 
-    payload = {
-        "content": message
-    }
-
-    response = post_to_discord(payload)
-
-    if response is None:
-        return {
-            "status": "error",
-            "message": "Discord webhook URL missing"
-        }
-
-    return {
-        "status": "sent" if response.status_code in [200, 204] else "error",
-        "discord_status_code": response.status_code,
-        "discord_response": response.text
-    }
+    return send_telegram_message(message)
 
 
 # ====================================================
 # ROUTES
 # ====================================================
 
-@app.get("/test-discord")
-def test_discord():
-    if not DISCORD_WEBHOOK_URL:
-        return {
-            "status": "error",
-            "message": "DISCORD_WEBHOOK_URL is missing in Render environment variables."
-        }
+@app.get("/test-telegram")
+def test_telegram():
+    message = "✅ Telegram test from Render ML app."
 
-    payload = {
-        "content": "✅ Discord test from Render ML app."
-    }
-
-    response = post_to_discord(payload)
-
-    if response is None:
-        return {
-            "status": "error",
-            "message": "Discord webhook URL missing"
-        }
-
-    return {
-        "status": "sent" if response.status_code in [200, 204] else "error",
-        "discord_status_code": response.status_code,
-        "discord_response": response.text
-    }
+    return send_telegram_message(message)
 
 
 @app.get("/")
@@ -458,7 +403,7 @@ def home():
             "train": "/train",
             "webhook": "/webhook",
             "health": "/health",
-            "test_discord": "/test-discord",
+            "test_telegram": "/test-telegram",
             "test_supabase": "/test-supabase",
             "debug_counts": "/debug-counts",
         }
@@ -598,7 +543,7 @@ async def tradingview_webhook(request: Request):
 
     # ====================================================
     # ENTRY ALERT
-    # Score entry with Random Forest, insert row, send Discord if passed
+    # Score entry with Random Forest, insert row, send Telegram if passed
     # ====================================================
     if signal_type != "ENTRY":
         return {
@@ -630,10 +575,10 @@ async def tradingview_webhook(request: Request):
         insert_status = "error"
         insert_response = str(e)
 
-    discord_result = None
+    telegram_result = None
 
     if decision == "SEND":
-        discord_result = send_discord_alert(signal, probability, decision)
+        telegram_result = send_telegram_alert(signal, probability, decision)
 
     return {
         "status": "entry_processed",
@@ -644,7 +589,7 @@ async def tradingview_webhook(request: Request):
         "decision": decision,
         "supabase_insert_status": insert_status,
         "supabase_insert_response": insert_response,
-        "discord_result": discord_result,
+        "telegram_result": telegram_result,
     }
 
 
