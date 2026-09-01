@@ -359,6 +359,27 @@ def send_discord_alert(signal: Dict[str, Any], probability: float, decision: str
 # ROUTES
 # ====================================================
 
+@app.get("/test-discord")
+def test_discord():
+    if not DISCORD_WEBHOOK_URL:
+        return {
+            "status": "error",
+            "message": "DISCORD_WEBHOOK_URL is missing in Render environment variables."
+        }
+
+    payload = {
+        "content": "✅ Discord test from Render ML app."
+    }
+
+    response = requests.post(DISCORD_WEBHOOK_URL, json=payload)
+
+    return {
+        "status": "sent" if response.status_code in [200, 204] else "error",
+        "discord_status_code": response.status_code,
+        "discord_response": response.text
+    }
+    
+
 @app.get("/")
 def home():
     return {
