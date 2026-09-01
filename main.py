@@ -121,6 +121,10 @@ def clean_signal_for_supabase(signal: Dict[str, Any]):
     # Do not save secret in Supabase
     cleaned.pop("secret", None)
 
+     # Add received time like Google Sheets does
+    if not cleaned.get("received_time"):
+        cleaned["received_time"] = datetime.utcnow().isoformat()
+
     # Convert empty strings to None
     for key, value in list(cleaned.items()):
         if value == "":
