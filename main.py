@@ -319,7 +319,10 @@ def load_model():
 
 def send_discord_alert(signal: Dict[str, Any], probability: float, decision: str):
     if not DISCORD_WEBHOOK_URL:
-        return
+        return {
+            "status": "error",
+            "message": "DISCORD_WEBHOOK_URL missing"
+        }
 
     symbol = signal.get("symbol", "")
     side = signal.get("side", "")
@@ -352,7 +355,22 @@ def send_discord_alert(signal: Dict[str, Any], probability: float, decision: str
         "content": message
     }
 
-    requests.post(DISCORD_WEBHOOK_URL, json=payload)
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "TradingMLFilter/1.0"
+    }
+
+    response = requests.post(
+        DISCORD_WEBHOOK_URL,
+        headers=headers,
+        json=payload,
+        timeout=10
+    )
+
+    return {
+        "discord_status_code": response.status_code,
+        "discord_response": response.text
+    }
 
 
 # ====================================================
@@ -371,14 +389,23 @@ def test_discord():
         "content": "✅ Discord test from Render ML app."
     }
 
-    response = requests.post(DISCORD_WEBHOOK_URL, json=payload)
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "TradingMLFilter/1.0"
+    }
+
+    response = requests.post(
+        DISCORD_WEBHOOK_URL,
+        headers=headers,
+        json=payload,
+        timeout=10
+    )
 
     return {
         "status": "sent" if response.status_code in [200, 204] else "error",
         "discord_status_code": response.status_code,
         "discord_response": response.text
     }
-    
 
 @app.get("/")
 def home():
