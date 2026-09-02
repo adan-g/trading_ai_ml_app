@@ -185,10 +185,13 @@ def insert_raw_signal(signal: Dict[str, Any]):
 
 
 def update_signal_result(id_trade: str, signal: Dict[str, Any]):
+    id_trade = str(id_trade).strip()
+
     url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
 
     params = {
-        "id_trade": f"eq.{id_trade}"
+        "id_trade": f"eq.{id_trade}",
+        "select": "id,id_trade,signal_type,result,r_result,candles_to_result,reached_2r,candles_to_2r,max_r_before_sl,updated_at"
     }
 
     payload = {
@@ -215,15 +218,21 @@ def update_signal_result(id_trade: str, signal: Dict[str, Any]):
     if payload.get("reached_2r") is not None:
         payload["reached_2r"] = str(payload["reached_2r"]).strip().upper()
 
+    print("RESULT UPDATE ID_TRADE:", id_trade)
+    print("RESULT UPDATE PAYLOAD:", payload)
+
     response = requests.patch(
         url,
         headers={
             **supabase_headers(),
-            "Prefer": "return=minimal",
+            "Prefer": "return=representation",
         },
         params=params,
         data=json.dumps(payload),
     )
+
+    print("RESULT UPDATE RAW STATUS:", response.status_code)
+    print("RESULT UPDATE RAW RESPONSE:", response.text)
 
     return response.status_code, response.text
 
