@@ -25,6 +25,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 TABLE_NAME = "signals"
+
 MODEL_FILE = "/var/data/random_forest_model.pkl"
 ENCODERS_FILE = "/var/data/label_encoders.pkl"
 
@@ -57,6 +58,8 @@ FEATURE_COLUMNS = [
     "touching_ssl",
     "closest_bsl_distance_atr",
     "closest_ssl_distance_atr",
+    "closest_4h_bsl_distance_atr",
+    "closest_4h_ssl_distance_atr",
     "closest_zone_type",
     "closest_zone_age",
     "active_bsl_count",
@@ -98,10 +101,20 @@ NUMERIC_COLUMNS = [
     "lower_wick",
     "closest_bsl_distance_atr",
     "closest_ssl_distance_atr",
+    "closest_4h_bsl_distance_atr",
+    "closest_4h_ssl_distance_atr",
     "closest_zone_age",
     "active_bsl_count",
     "active_ssl_count",
     "hour",
+]
+
+
+DISTANCE_COLUMNS = [
+    "closest_bsl_distance_atr",
+    "closest_ssl_distance_atr",
+    "closest_4h_bsl_distance_atr",
+    "closest_4h_ssl_distance_atr",
 ]
 
 
@@ -151,7 +164,9 @@ def get_completed_signals():
     )
 
     if response.status_code not in [200, 201]:
-        raise Exception(f"Supabase error: {response.status_code} - {response.text}")
+        raise Exception(
+            f"Supabase error: {response.status_code} - {response.text}"
+        )
 
     rows = response.json()
 
@@ -191,7 +206,11 @@ def update_signal_result(id_trade: str, signal: Dict[str, Any]):
 
     params = {
         "id_trade": f"eq.{id_trade}",
-        "select": "id,id_trade,signal_type,result,r_result,candles_to_result,reached_2r,candles_to_2r,max_r_before_sl,updated_at"
+        "select": (
+            "id,id_trade,signal_type,result,r_result,"
+            "candles_to_result,reached_2r,candles_to_2r,"
+            "max_r_before_sl,updated_at"
+        ),
     }
 
     payload = {
@@ -213,10 +232,14 @@ def update_signal_result(id_trade: str, signal: Dict[str, Any]):
     }
 
     if payload.get("result") is not None:
-        payload["result"] = str(payload["result"]).strip().upper()
+        payload["result"] = (
+            str(payload["result"]).strip().upper()
+        )
 
     if payload.get("reached_2r") is not None:
-        payload["reached_2r"] = str(payload["reached_2r"]).strip().upper()
+        payload["reached_2r"] = (
+            str(payload["reached_2r"]).strip().upper()
+        )
 
     print("RESULT UPDATE ID_TRADE:", id_trade)
     print("RESULT UPDATE PAYLOAD:", payload)
@@ -249,12 +272,23 @@ def clean_dataframe(df: pd.DataFrame):
             df[col] = None
 
     for col in NUMERIC_COLUMNS:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-        df[col] = df[col].fillna(0)
+        df[col] = pd.to_numeric(
+            df[col],
+            errors="coerce",
+        )
+
+        if col in DISTANCE_COLUMNS:
+            df[col] = df[col].fillna(-1.0)
+        else:
+            df[col] = df[col].fillna(0)
 
     for col in CATEGORICAL_COLUMNS:
         df[col] = df[col].astype(str).fillna("UNKNOWN")
-        df[col] = df[col].replace(["", "None", "nan", "NaN"], "UNKNOWN")
+
+        df[col] = df[col].replace(
+            ["", "None", "nan", "NaN"],
+            "UNKNOWN",
+        )
 
     return df
 
@@ -264,36 +298,63 @@ def train_encoders(df: pd.DataFrame):
 
     for col in CATEGORICAL_COLUMNS:
         encoder = LabelEncoder()
-        df[col] = encoder.fit_transform(df[col].astype(str))
+
+        df[col] = encoder.fit_transform(
+            df[col].astype(str)
+        )
+
         encoders[col] = encoder
 
     return df, encoders
 
 
-def apply_encoders_to_signal(df: pd.DataFrame, encoders: Dict[str, LabelEncoder]):
+def apply_encoders_to_signal(
+    df: pd.DataFrame,
+    encoders: Dict[str, LabelEncoder],
+):
     df = df.copy()
 
     for col in CATEGORICAL_COLUMNS:
         df[col] = df[col].astype(str).fillna("UNKNOWN")
-        df[col] = df[col].replace(["", "None", "nan", "NaN"], "UNKNOWN")
 
-        encoder = encoders[col]
-        known_classes = set(encoder.classes_)
-
-        df[col] = df[col].apply(
-            lambda x: x if x in known_classes else encoder.classes_[0]
+        df[col] = df[col].replace(
+            ["", "None", "nan", "NaN"],
+            "UNKNOWN",
         )
 
-        df[col] = encoder.transform(df[col].astype(str))
+        encoder = encoders[col]
+
+        known_classes = set(
+            encoder.classes_
+        )
+
+        df[col] = df[col].apply(
+            lambda x: (
+                x
+                if x in known_classes
+                else encoder.classes_[0]
+            )
+        )
+
+        df[col] = encoder.transform(
+            df[col].astype(str)
+        )
 
     return df
 
 
-def prepare_single_signal(signal: Dict[str, Any], encoders: Dict[str, LabelEncoder]):
+def prepare_single_signal(
+    signal: Dict[str, Any],
+    encoders: Dict[str, LabelEncoder],
+):
     df = pd.DataFrame([signal])
 
     df = clean_dataframe(df)
-    df = apply_encoders_to_signal(df, encoders)
+
+    df = apply_encoders_to_signal(
+        df,
+        encoders,
+    )
 
     return df[FEATURE_COLUMNS]
 
@@ -311,7 +372,10 @@ def save_model(model, encoders):
 
 
 def load_model():
-    if not os.path.exists(MODEL_FILE) or not os.path.exists(ENCODERS_FILE):
+    if (
+        not os.path.exists(MODEL_FILE)
+        or not os.path.exists(ENCODERS_FILE)
+    ):
         return None, None
 
     with open(MODEL_FILE, "rb") as f:
@@ -328,13 +392,22 @@ def load_model():
 # ====================================================
 
 def send_telegram_message(message: str):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    if (
+        not TELEGRAM_BOT_TOKEN
+        or not TELEGRAM_CHAT_ID
+    ):
         return {
             "status": "error",
-            "message": "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing in Render environment variables."
+            "message": (
+                "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID "
+                "missing in Render environment variables."
+            ),
         }
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    )
 
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -345,17 +418,25 @@ def send_telegram_message(message: str):
     response = requests.post(
         url,
         json=payload,
-        timeout=10
+        timeout=10,
     )
 
     return {
-        "status": "sent" if response.status_code == 200 else "error",
+        "status": (
+            "sent"
+            if response.status_code == 200
+            else "error"
+        ),
         "telegram_status_code": response.status_code,
         "telegram_response": response.text,
     }
 
 
-def send_telegram_alert(signal: Dict[str, Any], probability: float, decision: str):
+def send_telegram_alert(
+    signal: Dict[str, Any],
+    probability: float,
+    decision: str,
+):
     symbol = signal.get("symbol", "")
     side = signal.get("side", "")
     timeframe = signal.get("timeframe", "")
@@ -396,6 +477,7 @@ def send_telegram_alert(signal: Dict[str, Any], probability: float, decision: st
 @app.get("/test-telegram")
 def test_telegram():
     message = "✅ Telegram test from Render ML app."
+
     return send_telegram_message(message)
 
 
@@ -412,7 +494,7 @@ def home():
             "test_telegram": "/test-telegram",
             "test_supabase": "/test-supabase",
             "debug_counts": "/debug-counts",
-        }
+        },
     }
 
 
@@ -423,32 +505,52 @@ def health():
     }
 
 
-@app.api_route("/train", methods=["GET", "POST"])
+@app.api_route(
+    "/train",
+    methods=["GET", "POST"],
+)
 def train_model():
     rows = get_completed_signals()
 
     if len(rows) < 5:
         return {
             "status": "not_enough_data",
-            "message": "Need at least 5 completed trades to train.",
+            "message": (
+                "Need at least 5 completed trades "
+                "to train."
+            ),
             "rows_found": len(rows),
         }
 
     df = pd.DataFrame(rows)
 
-    df["result"] = df["result"].astype(str).str.strip().str.upper()
-    df = df[df["result"].isin(["WIN", "LOSS"])]
+    df["result"] = (
+        df["result"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    df = df[
+        df["result"].isin(
+            ["WIN", "LOSS"]
+        )
+    ]
 
     if len(df) < 5:
         return {
             "status": "not_enough_data",
-            "message": "Need at least 5 WIN/LOSS trades.",
+            "message": (
+                "Need at least 5 WIN/LOSS trades."
+            ),
             "rows_found": len(df),
         }
 
     df = clean_dataframe(df)
 
-    df["target"] = df["result"].apply(lambda x: 1 if x == "WIN" else 0)
+    df["target"] = df["result"].apply(
+        lambda x: 1 if x == "WIN" else 0
+    )
 
     df, encoders = train_encoders(df)
 
@@ -458,18 +560,27 @@ def train_model():
     if len(y.unique()) < 2:
         return {
             "status": "not_enough_classes",
-            "message": "Need both WIN and LOSS trades to train.",
+            "message": (
+                "Need both WIN and LOSS trades "
+                "to train."
+            ),
             "rows_found": len(df),
         }
 
     if len(df) >= 20:
-        X_train, X_test, y_train, y_test = train_test_split(
+        (
+            X_train,
+            X_test,
+            y_train,
+            y_test,
+        ) = train_test_split(
             X,
             y,
             test_size=0.25,
             random_state=42,
             stratify=y,
         )
+
     else:
         X_train = X
         X_test = X
@@ -483,15 +594,30 @@ def train_model():
         class_weight="balanced",
     )
 
-    model.fit(X_train, y_train)
+    model.fit(
+        X_train,
+        y_train,
+    )
 
-    predictions = model.predict(X_test)
-    accuracy = accuracy_score(y_test, predictions)
+    predictions = model.predict(
+        X_test
+    )
 
-    save_model(model, encoders)
+    accuracy = accuracy_score(
+        y_test,
+        predictions,
+    )
+
+    save_model(
+        model,
+        encoders,
+    )
 
     feature_importance = sorted(
-        zip(FEATURE_COLUMNS, model.feature_importances_),
+        zip(
+            FEATURE_COLUMNS,
+            model.feature_importances_,
+        ),
         key=lambda x: x[1],
         reverse=True,
     )
@@ -499,58 +625,126 @@ def train_model():
     return {
         "status": "trained",
         "rows_used": len(df),
-        "accuracy": round(float(accuracy), 4),
-        "win_count": int((df["target"] == 1).sum()),
-        "loss_count": int((df["target"] == 0).sum()),
+        "accuracy": round(
+            float(accuracy),
+            4,
+        ),
+        "win_count": int(
+            (df["target"] == 1).sum()
+        ),
+        "loss_count": int(
+            (df["target"] == 0).sum()
+        ),
         "top_features": [
             {
                 "feature": feature,
-                "importance": round(float(importance), 4)
+                "importance": round(
+                    float(importance),
+                    4,
+                ),
             }
-            for feature, importance in feature_importance[:10]
+            for feature, importance
+            in feature_importance[:10]
         ],
     }
 
 
 @app.post("/webhook")
-async def tradingview_webhook(request: Request):
+async def tradingview_webhook(
+    request: Request,
+):
     signal = await request.json()
 
-    print("========== NEW WEBHOOK RECEIVED ==========")
-    print("RAW SIGNAL:", signal)
+    print(
+        "========== NEW WEBHOOK RECEIVED =========="
+    )
+
+    print(
+        "RAW SIGNAL:",
+        signal,
+    )
 
     if signal.get("secret") != WEBHOOK_SECRET:
-        print("UNAUTHORIZED: wrong secret")
-        print("RECEIVED SECRET:", signal.get("secret"))
+        print(
+            "UNAUTHORIZED: wrong secret"
+        )
+
+        print(
+            "RECEIVED SECRET:",
+            signal.get("secret"),
+        )
+
         return {
             "status": "unauthorized",
-            "received_secret": signal.get("secret")
+            "received_secret": signal.get(
+                "secret"
+            ),
         }
 
-    signal_type = str(signal.get("signal_type", "")).upper().strip()
-    id_trade = signal.get("id_trade")
+    signal_type = str(
+        signal.get(
+            "signal_type",
+            "",
+        )
+    ).upper().strip()
 
-    print("SIGNAL TYPE:", signal_type)
-    print("ID TRADE:", id_trade)
-    print("SYMBOL:", signal.get("symbol"))
-    print("TIMEFRAME:", signal.get("timeframe"))
+    id_trade = signal.get(
+        "id_trade"
+    )
+
+    print(
+        "SIGNAL TYPE:",
+        signal_type,
+    )
+
+    print(
+        "ID TRADE:",
+        id_trade,
+    )
+
+    print(
+        "SYMBOL:",
+        signal.get("symbol"),
+    )
+
+    print(
+        "TIMEFRAME:",
+        signal.get("timeframe"),
+    )
 
     if not id_trade:
-        print("ERROR: Missing id_trade")
+        print(
+            "ERROR: Missing id_trade"
+        )
+
         return {
             "status": "error",
-            "message": "Missing id_trade"
+            "message": "Missing id_trade",
         }
 
     # ====================================================
     # RESULT ALERT
     # Update existing Supabase row with WIN/LOSS result
     # ====================================================
-    if signal_type == "RESULT":
-        update_status, update_response = update_signal_result(id_trade, signal)
 
-        print("RESULT UPDATE STATUS:", update_status)
-        print("RESULT UPDATE RESPONSE:", update_response)
+    if signal_type == "RESULT":
+        (
+            update_status,
+            update_response,
+        ) = update_signal_result(
+            id_trade,
+            signal,
+        )
+
+        print(
+            "RESULT UPDATE STATUS:",
+            update_status,
+        )
+
+        print(
+            "RESULT UPDATE RESPONSE:",
+            update_response,
+        )
 
         return {
             "status": "result_processed",
@@ -558,8 +752,12 @@ async def tradingview_webhook(request: Request):
             "symbol": signal.get("symbol"),
             "side": signal.get("side"),
             "result": signal.get("result"),
-            "supabase_update_status": update_status,
-            "supabase_update_response": update_response,
+            "supabase_update_status": (
+                update_status
+            ),
+            "supabase_update_response": (
+                update_response
+            ),
         }
 
     # ====================================================
@@ -568,89 +766,198 @@ async def tradingview_webhook(request: Request):
     # If no model, insert anyway.
     # Telegram only if decision is SEND.
     # ====================================================
+
     if signal_type != "ENTRY":
-        print("IGNORED SIGNAL TYPE:", signal_type)
+        print(
+            "IGNORED SIGNAL TYPE:",
+            signal_type,
+        )
+
         return {
             "status": "ignored",
-            "message": f"Signal type ignored: {signal_type}"
+            "message": (
+                f"Signal type ignored: "
+                f"{signal_type}"
+            ),
         }
 
     model, encoders = load_model()
 
     probability = None
+
     decision = "NO_MODEL"
+
     telegram_result = None
 
-    if model is None or encoders is None:
-        print("NO MODEL FOUND - INSERTING ENTRY ANYWAY")
+    if (
+        model is None
+        or encoders is None
+    ):
+        print(
+            "NO MODEL FOUND - "
+            "INSERTING ENTRY ANYWAY"
+        )
 
         signal["ml_probability"] = None
-        signal["ml_decision"] = "NO_MODEL"
+
+        signal["ml_decision"] = (
+            "NO_MODEL"
+        )
+
         signal["model_version"] = None
 
     else:
-        X_signal = prepare_single_signal(signal, encoders)
+        X_signal = prepare_single_signal(
+            signal,
+            encoders,
+        )
 
-        probability = float(model.predict_proba(X_signal)[0][1])
-        decision = "SEND" if probability >= ML_THRESHOLD else "SKIP"
+        probability = float(
+            model.predict_proba(
+                X_signal
+            )[0][1]
+        )
 
-        signal["ml_probability"] = probability
-        signal["ml_decision"] = decision
-        signal["model_version"] = "random_forest_v1"
+        decision = (
+            "SEND"
+            if probability >= ML_THRESHOLD
+            else "SKIP"
+        )
 
-        print("ML PROBABILITY:", probability)
-        print("ML DECISION:", decision)
+        signal["ml_probability"] = (
+            probability
+        )
+
+        signal["ml_decision"] = (
+            decision
+        )
+
+        signal["model_version"] = (
+            "random_forest_v1"
+        )
+
+        print(
+            "ML PROBABILITY:",
+            probability,
+        )
+
+        print(
+            "ML DECISION:",
+            decision,
+        )
 
     # Insert into Supabase AFTER ML values are added
+
     try:
-        insert_status, insert_response = insert_raw_signal(signal)
+        (
+            insert_status,
+            insert_response,
+        ) = insert_raw_signal(
+            signal
+        )
+
     except Exception as e:
         insert_status = "error"
         insert_response = str(e)
 
-    print("SUPABASE INSERT STATUS:", insert_status)
-    print("SUPABASE INSERT RESPONSE:", insert_response)
+    print(
+        "SUPABASE INSERT STATUS:",
+        insert_status,
+    )
+
+    print(
+        "SUPABASE INSERT RESPONSE:",
+        insert_response,
+    )
 
     # Send Telegram only if ML says SEND
+
     if decision == "SEND":
-        telegram_result = send_telegram_alert(signal, probability, decision)
-        print("TELEGRAM RESULT:", telegram_result)
+        telegram_result = (
+            send_telegram_alert(
+                signal,
+                probability,
+                decision,
+            )
+        )
+
+        print(
+            "TELEGRAM RESULT:",
+            telegram_result,
+        )
 
     return {
         "status": "entry_processed",
         "id_trade": id_trade,
         "symbol": signal.get("symbol"),
         "side": signal.get("side"),
-        "timeframe": signal.get("timeframe"),
-        "probability": round(probability, 4) if probability is not None else None,
+        "timeframe": signal.get(
+            "timeframe"
+        ),
+        "probability": (
+            round(
+                probability,
+                4,
+            )
+            if probability is not None
+            else None
+        ),
         "decision": decision,
-        "supabase_insert_status": insert_status,
-        "supabase_insert_response": insert_response,
-        "telegram_result": telegram_result,
+        "supabase_insert_status": (
+            insert_status
+        ),
+        "supabase_insert_response": (
+            insert_response
+        ),
+        "telegram_result": (
+            telegram_result
+        ),
     }
 
 
 @app.post("/score-test")
-async def score_test(request: Request):
+async def score_test(
+    request: Request,
+):
     signal = await request.json()
 
     model, encoders = load_model()
 
-    if model is None or encoders is None:
+    if (
+        model is None
+        or encoders is None
+    ):
         return {
             "status": "no_model",
-            "message": "Train the model first using /train."
+            "message": (
+                "Train the model first "
+                "using /train."
+            ),
         }
 
-    X_signal = prepare_single_signal(signal, encoders)
+    X_signal = prepare_single_signal(
+        signal,
+        encoders,
+    )
 
-    probability = float(model.predict_proba(X_signal)[0][1])
+    probability = float(
+        model.predict_proba(
+            X_signal
+        )[0][1]
+    )
 
-    decision = "SEND" if probability >= ML_THRESHOLD else "SKIP"
+    decision = (
+        "SEND"
+        if probability >= ML_THRESHOLD
+        else "SKIP"
+    )
 
     return {
         "status": "scored",
-        "probability": round(probability, 4),
+        "probability": round(
+            probability,
+            4,
+        ),
         "decision": decision,
     }
 
@@ -658,9 +965,16 @@ async def score_test(request: Request):
 @app.get("/test-supabase")
 def test_supabase():
     try:
-        url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
+        url = (
+            f"{SUPABASE_URL}/rest/v1/"
+            f"{TABLE_NAME}"
+        )
+
         params = {
-            "select": "id,id_trade,symbol,result,ml_probability,ml_decision",
+            "select": (
+                "id,id_trade,symbol,result,"
+                "ml_probability,ml_decision"
+            ),
             "limit": "5",
             "order": "created_at.desc",
         }
@@ -672,9 +986,19 @@ def test_supabase():
         )
 
         return {
-            "status": "connected" if response.status_code == 200 else "error",
-            "supabase_status_code": response.status_code,
-            "supabase_response": response.json() if response.text else [],
+            "status": (
+                "connected"
+                if response.status_code == 200
+                else "error"
+            ),
+            "supabase_status_code": (
+                response.status_code
+            ),
+            "supabase_response": (
+                response.json()
+                if response.text
+                else []
+            ),
             "raw_response": response.text,
         }
 
@@ -688,13 +1012,23 @@ def test_supabase():
 @app.get("/debug-counts")
 def debug_counts():
     try:
-        url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
+        url = (
+            f"{SUPABASE_URL}/rest/v1/"
+            f"{TABLE_NAME}"
+        )
 
         response = requests.get(
             url,
             headers=supabase_headers(),
             params={
-                "select": "id_trade,symbol,signal_type,result,reached_2r,ml_probability,ml_decision,created_at",
+                "select": (
+                    "id_trade,symbol,"
+                    "signal_type,result,"
+                    "reached_2r,"
+                    "ml_probability,"
+                    "ml_decision,"
+                    "created_at"
+                ),
                 "limit": "20",
                 "order": "created_at.desc",
             },
@@ -703,8 +1037,12 @@ def debug_counts():
         if response.status_code != 200:
             return {
                 "status": "error",
-                "code": response.status_code,
-                "response": response.text,
+                "code": (
+                    response.status_code
+                ),
+                "response": (
+                    response.text
+                ),
             }
 
         recent_rows = response.json()
@@ -713,21 +1051,44 @@ def debug_counts():
             url,
             headers=supabase_headers(),
             params={
-                "select": "result,signal_type,ml_decision",
+                "select": (
+                    "result,"
+                    "signal_type,"
+                    "ml_decision"
+                ),
             },
         )
 
         result_counts = {}
+
         signal_type_counts = {}
+
         ml_decision_counts = {}
 
         if all_response.status_code == 200:
             rows = all_response.json()
 
             for row in rows:
-                result = str(row.get("result", "NULL")).strip()
-                signal_type = str(row.get("signal_type", "NULL")).strip()
-                ml_decision = str(row.get("ml_decision", "NULL")).strip()
+                result = str(
+                    row.get(
+                        "result",
+                        "NULL",
+                    )
+                ).strip()
+
+                signal_type = str(
+                    row.get(
+                        "signal_type",
+                        "NULL",
+                    )
+                ).strip()
+
+                ml_decision = str(
+                    row.get(
+                        "ml_decision",
+                        "NULL",
+                    )
+                ).strip()
 
                 if result == "":
                     result = "EMPTY"
@@ -738,16 +1099,46 @@ def debug_counts():
                 if ml_decision == "":
                     ml_decision = "EMPTY"
 
-                result_counts[result] = result_counts.get(result, 0) + 1
-                signal_type_counts[signal_type] = signal_type_counts.get(signal_type, 0) + 1
-                ml_decision_counts[ml_decision] = ml_decision_counts.get(ml_decision, 0) + 1
+                result_counts[result] = (
+                    result_counts.get(
+                        result,
+                        0,
+                    )
+                    + 1
+                )
+
+                signal_type_counts[
+                    signal_type
+                ] = (
+                    signal_type_counts.get(
+                        signal_type,
+                        0,
+                    )
+                    + 1
+                )
+
+                ml_decision_counts[
+                    ml_decision
+                ] = (
+                    ml_decision_counts.get(
+                        ml_decision,
+                        0,
+                    )
+                    + 1
+                )
 
         return {
             "status": "connected",
             "recent_rows": recent_rows,
-            "result_counts": result_counts,
-            "signal_type_counts": signal_type_counts,
-            "ml_decision_counts": ml_decision_counts,
+            "result_counts": (
+                result_counts
+            ),
+            "signal_type_counts": (
+                signal_type_counts
+            ),
+            "ml_decision_counts": (
+                ml_decision_counts
+            ),
         }
 
     except Exception as e:
