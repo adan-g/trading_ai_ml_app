@@ -29,6 +29,8 @@ TABLE_NAME = "signals"
 MODEL_FILE = "/var/data/random_forest_model.pkl"
 ENCODERS_FILE = "/var/data/label_encoders.pkl"
 
+MODEL_VERSION = "random_forest_v2"
+
 ML_THRESHOLD = float(os.getenv("ML_THRESHOLD", "0.60"))
 
 app = FastAPI(title="Trading ML Filter")
@@ -623,30 +625,20 @@ def train_model():
     )
 
     return {
-        "status": "trained",
-        "rows_used": len(df),
-        "accuracy": round(
-            float(accuracy),
-            4,
-        ),
-        "win_count": int(
-            (df["target"] == 1).sum()
-        ),
-        "loss_count": int(
-            (df["target"] == 0).sum()
-        ),
-        "top_features": [
-            {
-                "feature": feature,
-                "importance": round(
-                    float(importance),
-                    4,
-                ),
-            }
-            for feature, importance
-            in feature_importance[:10]
-        ],
-    }
+    "status": "trained",
+    "model_version": MODEL_VERSION,
+    "rows_used": len(df),
+    "accuracy": round(float(accuracy), 4),
+    "win_count": int((df["target"] == 1).sum()),
+    "loss_count": int((df["target"] == 0).sum()),
+    "top_features": [
+        {
+            "feature": feature,
+            "importance": round(float(importance), 4)
+        }
+        for feature, importance in feature_importance[:10]
+    ],
+}
 
 
 @app.post("/webhook")
@@ -833,7 +825,7 @@ async def tradingview_webhook(
         )
 
         signal["model_version"] = (
-            "random_forest_v1"
+            MODEL_VERSION
         )
 
         print(
