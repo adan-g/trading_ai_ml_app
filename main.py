@@ -6,20 +6,18 @@ from typing import Dict, Any
 
 import pandas as pd
 import requests
+
 from fastapi import FastAPI, Request
+
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import LabelEncoder
 
 
-# ====================================================
-# CONFIG
-# ====================================================
-
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "my_secret_123")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -35,10 +33,6 @@ ML_THRESHOLD = float(os.getenv("ML_THRESHOLD", "0.60"))
 
 app = FastAPI(title="Trading ML Filter")
 
-
-# ====================================================
-# FEATURES USED BY RANDOM FOREST
-# ====================================================
 
 FEATURE_COLUMNS = [
     "side",
@@ -120,9 +114,11 @@ DISTANCE_COLUMNS = [
 ]
 
 
-# ====================================================
-# SUPABASE HELPERS
-# ====================================================
+COUNT_COLUMNS = [
+    "active_bsl_count",
+    "active_ssl_count",
+]
+
 
 def supabase_headers():
     return {
@@ -135,14 +131,11 @@ def supabase_headers():
 def clean_signal_for_supabase(signal: Dict[str, Any]):
     cleaned = signal.copy()
 
-    # Do not save secret in Supabase
     cleaned.pop("secret", None)
 
-    # Add received time
     if not cleaned.get("received_time"):
         cleaned["received_time"] = datetime.utcnow().isoformat()
 
-    # Convert empty strings to None
     for key, value in list(cleaned.items()):
         if value == "":
             cleaned[key] = None
@@ -175,7 +168,9 @@ def get_completed_signals():
     completed_rows = []
 
     for row in rows:
-        result = str(row.get("result", "")).strip().upper()
+        result = str(
+            row.get("result", "")
+        ).strip().upper()
 
         if result in ["WIN", "LOSS"]:
             row["result"] = result
@@ -185,7 +180,9 @@ def get_completed_signals():
 
 
 def insert_raw_signal(signal: Dict[str, Any]):
-    clean_signal = clean_signal_for_supabase(signal)
+    clean_signal = clean_signal_for_supabase(
+        signal
+    )
 
     url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
 
@@ -201,7 +198,10 @@ def insert_raw_signal(signal: Dict[str, Any]):
     return response.status_code, response.text
 
 
-def update_signal_result(id_trade: str, signal: Dict[str, Any]):
+def update_signal_result(
+    id_trade: str,
+    signal: Dict[str, Any],
+):
     id_trade = str(id_trade).strip()
 
     url = f"{SUPABASE_URL}/rest/v1/{TABLE_NAME}"
@@ -219,12 +219,24 @@ def update_signal_result(id_trade: str, signal: Dict[str, Any]):
         "signal_type": "ENTRY + RESULT",
         "result": signal.get("result"),
         "r_result": signal.get("r_result"),
-        "candles_to_result": signal.get("candles_to_result"),
-        "tracking_target_2r": signal.get("tracking_target_2r"),
-        "target_price_2r": signal.get("target_price_2r"),
-        "reached_2r": signal.get("reached_2r"),
-        "candles_to_2r": signal.get("candles_to_2r"),
-        "max_r_before_sl": signal.get("max_r_before_sl"),
+        "candles_to_result": signal.get(
+            "candles_to_result"
+        ),
+        "tracking_target_2r": signal.get(
+            "tracking_target_2r"
+        ),
+        "target_price_2r": signal.get(
+            "target_price_2r"
+        ),
+        "reached_2r": signal.get(
+            "reached_2r"
+        ),
+        "candles_to_2r": signal.get(
+            "candles_to_2r"
+        ),
+        "max_r_before_sl": signal.get(
+            "max_r_before_sl"
+        ),
         "updated_at": datetime.utcnow().isoformat(),
     }
 
@@ -234,17 +246,24 @@ def update_signal_result(id_trade: str, signal: Dict[str, Any]):
     }
 
     if payload.get("result") is not None:
-        payload["result"] = (
-            str(payload["result"]).strip().upper()
-        )
+        payload["result"] = str(
+            payload["result"]
+        ).strip().upper()
 
     if payload.get("reached_2r") is not None:
-        payload["reached_2r"] = (
-            str(payload["reached_2r"]).strip().upper()
-        )
+        payload["reached_2r"] = str(
+            payload["reached_2r"]
+        ).strip().upper()
 
-    print("RESULT UPDATE ID_TRADE:", id_trade)
-    print("RESULT UPDATE PAYLOAD:", payload)
+    print(
+        "RESULT UPDATE ID_TRADE:",
+        id_trade,
+    )
+
+    print(
+        "RESULT UPDATE PAYLOAD:",
+        payload,
+    )
 
     response = requests.patch(
         url,
@@ -256,15 +275,18 @@ def update_signal_result(id_trade: str, signal: Dict[str, Any]):
         data=json.dumps(payload),
     )
 
-    print("RESULT UPDATE RAW STATUS:", response.status_code)
-    print("RESULT UPDATE RAW RESPONSE:", response.text)
+    print(
+        "RESULT UPDATE RAW STATUS:",
+        response.status_code,
+    )
+
+    print(
+        "RESULT UPDATE RAW RESPONSE:",
+        response.text,
+    )
 
     return response.status_code, response.text
 
-
-# ====================================================
-# DATA CLEANING
-# ====================================================
 
 def clean_dataframe(df: pd.DataFrame):
     df = df.copy()
@@ -281,14 +303,27 @@ def clean_dataframe(df: pd.DataFrame):
 
         if col in DISTANCE_COLUMNS:
             df[col] = df[col].fillna(-1.0)
+
+        elif col in COUNT_COLUMNS:
+            df[col] = df[col].fillna(-1.0)
+
         else:
             df[col] = df[col].fillna(0)
 
     for col in CATEGORICAL_COLUMNS:
-        df[col] = df[col].astype(str).fillna("UNKNOWN")
+        df[col] = (
+            df[col]
+            .astype(str)
+            .fillna("UNKNOWN")
+        )
 
         df[col] = df[col].replace(
-            ["", "None", "nan", "NaN"],
+            [
+                "",
+                "None",
+                "nan",
+                "NaN",
+            ],
             "UNKNOWN",
         )
 
@@ -317,10 +352,19 @@ def apply_encoders_to_signal(
     df = df.copy()
 
     for col in CATEGORICAL_COLUMNS:
-        df[col] = df[col].astype(str).fillna("UNKNOWN")
+        df[col] = (
+            df[col]
+            .astype(str)
+            .fillna("UNKNOWN")
+        )
 
         df[col] = df[col].replace(
-            ["", "None", "nan", "NaN"],
+            [
+                "",
+                "None",
+                "nan",
+                "NaN",
+            ],
             "UNKNOWN",
         )
 
@@ -349,7 +393,9 @@ def prepare_single_signal(
     signal: Dict[str, Any],
     encoders: Dict[str, LabelEncoder],
 ):
-    df = pd.DataFrame([signal])
+    df = pd.DataFrame(
+        [signal]
+    )
 
     df = clean_dataframe(df)
 
@@ -361,16 +407,27 @@ def prepare_single_signal(
     return df[FEATURE_COLUMNS]
 
 
-# ====================================================
-# MODEL HELPERS
-# ====================================================
+def save_model(
+    model,
+    encoders,
+):
+    with open(
+        MODEL_FILE,
+        "wb",
+    ) as f:
+        pickle.dump(
+            model,
+            f,
+        )
 
-def save_model(model, encoders):
-    with open(MODEL_FILE, "wb") as f:
-        pickle.dump(model, f)
-
-    with open(ENCODERS_FILE, "wb") as f:
-        pickle.dump(encoders, f)
+    with open(
+        ENCODERS_FILE,
+        "wb",
+    ) as f:
+        pickle.dump(
+            encoders,
+            f,
+        )
 
 
 def load_model():
@@ -380,20 +437,24 @@ def load_model():
     ):
         return None, None
 
-    with open(MODEL_FILE, "rb") as f:
+    with open(
+        MODEL_FILE,
+        "rb",
+    ) as f:
         model = pickle.load(f)
 
-    with open(ENCODERS_FILE, "rb") as f:
+    with open(
+        ENCODERS_FILE,
+        "rb",
+    ) as f:
         encoders = pickle.load(f)
 
     return model, encoders
 
 
-# ====================================================
-# TELEGRAM
-# ====================================================
-
-def send_telegram_message(message: str):
+def send_telegram_message(
+    message: str,
+):
     if (
         not TELEGRAM_BOT_TOKEN
         or not TELEGRAM_CHAT_ID
@@ -401,8 +462,9 @@ def send_telegram_message(message: str):
         return {
             "status": "error",
             "message": (
-                "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID "
-                "missing in Render environment variables."
+                "TELEGRAM_BOT_TOKEN or "
+                "TELEGRAM_CHAT_ID missing in "
+                "Render environment variables."
             ),
         }
 
@@ -429,8 +491,12 @@ def send_telegram_message(message: str):
             if response.status_code == 200
             else "error"
         ),
-        "telegram_status_code": response.status_code,
-        "telegram_response": response.text,
+        "telegram_status_code": (
+            response.status_code
+        ),
+        "telegram_response": (
+            response.text
+        ),
     }
 
 
@@ -439,15 +505,50 @@ def send_telegram_alert(
     probability: float,
     decision: str,
 ):
-    symbol = signal.get("symbol", "")
-    side = signal.get("side", "")
-    timeframe = signal.get("timeframe", "")
-    entry = signal.get("entry_price", "")
-    stop = signal.get("stop_loss", "")
-    tp = signal.get("take_profit", "")
-    trend_1h = signal.get("trend_1h", "")
-    trend_4h = signal.get("trend_4h", "")
-    id_trade = signal.get("id_trade", "")
+    symbol = signal.get(
+        "symbol",
+        "",
+    )
+
+    side = signal.get(
+        "side",
+        "",
+    )
+
+    timeframe = signal.get(
+        "timeframe",
+        "",
+    )
+
+    entry = signal.get(
+        "entry_price",
+        "",
+    )
+
+    stop = signal.get(
+        "stop_loss",
+        "",
+    )
+
+    tp = signal.get(
+        "take_profit",
+        "",
+    )
+
+    trend_1h = signal.get(
+        "trend_1h",
+        "",
+    )
+
+    trend_4h = signal.get(
+        "trend_4h",
+        "",
+    )
+
+    id_trade = signal.get(
+        "id_trade",
+        "",
+    )
 
     message = f"""
 🚨 <b>ML FILTER PASSED</b>
@@ -469,18 +570,20 @@ def send_telegram_alert(
 <b>ID Trade:</b> {id_trade}
 """
 
-    return send_telegram_message(message)
+    return send_telegram_message(
+        message
+    )
 
-
-# ====================================================
-# ROUTES
-# ====================================================
 
 @app.get("/test-telegram")
 def test_telegram():
-    message = "✅ Telegram test from Render ML app."
+    message = (
+        "✅ Telegram test from Render ML app."
+    )
 
-    return send_telegram_message(message)
+    return send_telegram_message(
+        message
+    )
 
 
 @app.get("/")
@@ -503,13 +606,16 @@ def home():
 @app.get("/health")
 def health():
     return {
-        "status": "ok"
+        "status": "ok",
     }
 
 
 @app.api_route(
     "/train",
-    methods=["GET", "POST"],
+    methods=[
+        "GET",
+        "POST",
+    ],
 )
 def train_model():
     rows = get_completed_signals()
@@ -518,13 +624,15 @@ def train_model():
         return {
             "status": "not_enough_data",
             "message": (
-                "Need at least 5 completed trades "
-                "to train."
+                "Need at least 5 completed "
+                "trades to train."
             ),
             "rows_found": len(rows),
         }
 
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(
+        rows
+    )
 
     df["result"] = (
         df["result"]
@@ -535,7 +643,10 @@ def train_model():
 
     df = df[
         df["result"].isin(
-            ["WIN", "LOSS"]
+            [
+                "WIN",
+                "LOSS",
+            ]
         )
     ]
 
@@ -543,28 +654,44 @@ def train_model():
         return {
             "status": "not_enough_data",
             "message": (
-                "Need at least 5 WIN/LOSS trades."
+                "Need at least 5 "
+                "WIN/LOSS trades."
             ),
             "rows_found": len(df),
         }
 
-    df = clean_dataframe(df)
-
-    df["target"] = df["result"].apply(
-        lambda x: 1 if x == "WIN" else 0
+    df = clean_dataframe(
+        df
     )
 
-    df, encoders = train_encoders(df)
+    df["target"] = (
+        df["result"].apply(
+            lambda x: (
+                1
+                if x == "WIN"
+                else 0
+            )
+        )
+    )
 
-    X = df[FEATURE_COLUMNS]
+    df, encoders = (
+        train_encoders(df)
+    )
+
+    X = df[
+        FEATURE_COLUMNS
+    ]
+
     y = df["target"]
 
-    if len(y.unique()) < 2:
+    if len(
+        y.unique()
+    ) < 2:
         return {
             "status": "not_enough_classes",
             "message": (
-                "Need both WIN and LOSS trades "
-                "to train."
+                "Need both WIN and LOSS "
+                "trades to train."
             ),
             "rows_found": len(df),
         }
@@ -601,13 +728,17 @@ def train_model():
         y_train,
     )
 
-    predictions = model.predict(
-        X_test
+    predictions = (
+        model.predict(
+            X_test
+        )
     )
 
-    accuracy = accuracy_score(
-        y_test,
-        predictions,
+    accuracy = (
+        accuracy_score(
+            y_test,
+            predictions,
+        )
     )
 
     save_model(
@@ -625,20 +756,35 @@ def train_model():
     )
 
     return {
-    "status": "trained",
-    "model_version": MODEL_VERSION,
-    "rows_used": len(df),
-    "accuracy": round(float(accuracy), 4),
-    "win_count": int((df["target"] == 1).sum()),
-    "loss_count": int((df["target"] == 0).sum()),
-    "top_features": [
-        {
-            "feature": feature,
-            "importance": round(float(importance), 4)
-        }
-        for feature, importance in feature_importance[:10]
-    ],
-}
+        "status": "trained",
+        "model_version": MODEL_VERSION,
+        "rows_used": len(df),
+        "accuracy": round(
+            float(accuracy),
+            4,
+        ),
+        "win_count": int(
+            (
+                df["target"] == 1
+            ).sum()
+        ),
+        "loss_count": int(
+            (
+                df["target"] == 0
+            ).sum()
+        ),
+        "top_features": [
+            {
+                "feature": feature,
+                "importance": round(
+                    float(importance),
+                    4,
+                ),
+            }
+            for feature, importance
+            in feature_importance[:10]
+        ],
+    }
 
 
 @app.post("/webhook")
@@ -656,21 +802,16 @@ async def tradingview_webhook(
         signal,
     )
 
-    if signal.get("secret") != WEBHOOK_SECRET:
+    if (
+        signal.get("secret")
+        != WEBHOOK_SECRET
+    ):
         print(
             "UNAUTHORIZED: wrong secret"
         )
 
-        print(
-            "RECEIVED SECRET:",
-            signal.get("secret"),
-        )
-
         return {
             "status": "unauthorized",
-            "received_secret": signal.get(
-                "secret"
-            ),
         }
 
     signal_type = str(
@@ -696,12 +837,16 @@ async def tradingview_webhook(
 
     print(
         "SYMBOL:",
-        signal.get("symbol"),
+        signal.get(
+            "symbol"
+        ),
     )
 
     print(
         "TIMEFRAME:",
-        signal.get("timeframe"),
+        signal.get(
+            "timeframe"
+        ),
     )
 
     if not id_trade:
@@ -711,13 +856,10 @@ async def tradingview_webhook(
 
         return {
             "status": "error",
-            "message": "Missing id_trade",
+            "message": (
+                "Missing id_trade"
+            ),
         }
-
-    # ====================================================
-    # RESULT ALERT
-    # Update existing Supabase row with WIN/LOSS result
-    # ====================================================
 
     if signal_type == "RESULT":
         (
@@ -741,9 +883,15 @@ async def tradingview_webhook(
         return {
             "status": "result_processed",
             "id_trade": id_trade,
-            "symbol": signal.get("symbol"),
-            "side": signal.get("side"),
-            "result": signal.get("result"),
+            "symbol": signal.get(
+                "symbol"
+            ),
+            "side": signal.get(
+                "side"
+            ),
+            "result": signal.get(
+                "result"
+            ),
             "supabase_update_status": (
                 update_status
             ),
@@ -751,13 +899,6 @@ async def tradingview_webhook(
                 update_response
             ),
         }
-
-    # ====================================================
-    # ENTRY ALERT
-    # Score first if model exists.
-    # If no model, insert anyway.
-    # Telegram only if decision is SEND.
-    # ====================================================
 
     if signal_type != "ENTRY":
         print(
@@ -773,12 +914,12 @@ async def tradingview_webhook(
             ),
         }
 
-    model, encoders = load_model()
+    model, encoders = (
+        load_model()
+    )
 
     probability = None
-
     decision = "NO_MODEL"
-
     telegram_result = None
 
     if (
@@ -790,18 +931,24 @@ async def tradingview_webhook(
             "INSERTING ENTRY ANYWAY"
         )
 
-        signal["ml_probability"] = None
+        signal[
+            "ml_probability"
+        ] = None
 
-        signal["ml_decision"] = (
-            "NO_MODEL"
-        )
+        signal[
+            "ml_decision"
+        ] = "NO_MODEL"
 
-        signal["model_version"] = None
+        signal[
+            "model_version"
+        ] = None
 
     else:
-        X_signal = prepare_single_signal(
-            signal,
-            encoders,
+        X_signal = (
+            prepare_single_signal(
+                signal,
+                encoders,
+            )
         )
 
         probability = float(
@@ -816,17 +963,17 @@ async def tradingview_webhook(
             else "SKIP"
         )
 
-        signal["ml_probability"] = (
-            probability
-        )
+        signal[
+            "ml_probability"
+        ] = probability
 
-        signal["ml_decision"] = (
-            decision
-        )
+        signal[
+            "ml_decision"
+        ] = decision
 
-        signal["model_version"] = (
-            MODEL_VERSION
-        )
+        signal[
+            "model_version"
+        ] = MODEL_VERSION
 
         print(
             "ML PROBABILITY:",
@@ -838,8 +985,6 @@ async def tradingview_webhook(
             decision,
         )
 
-    # Insert into Supabase AFTER ML values are added
-
     try:
         (
             insert_status,
@@ -849,8 +994,13 @@ async def tradingview_webhook(
         )
 
     except Exception as e:
-        insert_status = "error"
-        insert_response = str(e)
+        insert_status = (
+            "error"
+        )
+
+        insert_response = str(
+            e
+        )
 
     print(
         "SUPABASE INSERT STATUS:",
@@ -861,8 +1011,6 @@ async def tradingview_webhook(
         "SUPABASE INSERT RESPONSE:",
         insert_response,
     )
-
-    # Send Telegram only if ML says SEND
 
     if decision == "SEND":
         telegram_result = (
@@ -881,8 +1029,12 @@ async def tradingview_webhook(
     return {
         "status": "entry_processed",
         "id_trade": id_trade,
-        "symbol": signal.get("symbol"),
-        "side": signal.get("side"),
+        "symbol": signal.get(
+            "symbol"
+        ),
+        "side": signal.get(
+            "side"
+        ),
         "timeframe": signal.get(
             "timeframe"
         ),
@@ -891,7 +1043,8 @@ async def tradingview_webhook(
                 probability,
                 4,
             )
-            if probability is not None
+            if probability
+            is not None
             else None
         ),
         "decision": decision,
@@ -913,7 +1066,9 @@ async def score_test(
 ):
     signal = await request.json()
 
-    model, encoders = load_model()
+    model, encoders = (
+        load_model()
+    )
 
     if (
         model is None
@@ -927,9 +1082,11 @@ async def score_test(
             ),
         }
 
-    X_signal = prepare_single_signal(
-        signal,
-        encoders,
+    X_signal = (
+        prepare_single_signal(
+            signal,
+            encoders,
+        )
     )
 
     probability = float(
@@ -991,7 +1148,9 @@ def test_supabase():
                 if response.text
                 else []
             ),
-            "raw_response": response.text,
+            "raw_response": (
+                response.text
+            ),
         }
 
     except Exception as e:
@@ -1022,11 +1181,16 @@ def debug_counts():
                     "created_at"
                 ),
                 "limit": "20",
-                "order": "created_at.desc",
+                "order": (
+                    "created_at.desc"
+                ),
             },
         )
 
-        if response.status_code != 200:
+        if (
+            response.status_code
+            != 200
+        ):
             return {
                 "status": "error",
                 "code": (
@@ -1037,28 +1201,35 @@ def debug_counts():
                 ),
             }
 
-        recent_rows = response.json()
+        recent_rows = (
+            response.json()
+        )
 
-        all_response = requests.get(
-            url,
-            headers=supabase_headers(),
-            params={
-                "select": (
-                    "result,"
-                    "signal_type,"
-                    "ml_decision"
-                ),
-            },
+        all_response = (
+            requests.get(
+                url,
+                headers=supabase_headers(),
+                params={
+                    "select": (
+                        "result,"
+                        "signal_type,"
+                        "ml_decision"
+                    ),
+                },
+            )
         )
 
         result_counts = {}
-
         signal_type_counts = {}
-
         ml_decision_counts = {}
 
-        if all_response.status_code == 200:
-            rows = all_response.json()
+        if (
+            all_response.status_code
+            == 200
+        ):
+            rows = (
+                all_response.json()
+            )
 
             for row in rows:
                 result = str(
@@ -1086,12 +1257,18 @@ def debug_counts():
                     result = "EMPTY"
 
                 if signal_type == "":
-                    signal_type = "EMPTY"
+                    signal_type = (
+                        "EMPTY"
+                    )
 
                 if ml_decision == "":
-                    ml_decision = "EMPTY"
+                    ml_decision = (
+                        "EMPTY"
+                    )
 
-                result_counts[result] = (
+                result_counts[
+                    result
+                ] = (
                     result_counts.get(
                         result,
                         0,
@@ -1121,7 +1298,9 @@ def debug_counts():
 
         return {
             "status": "connected",
-            "recent_rows": recent_rows,
+            "recent_rows": (
+                recent_rows
+            ),
             "result_counts": (
                 result_counts
             ),
